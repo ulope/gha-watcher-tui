@@ -113,6 +113,79 @@ async def test_app_exits_one_when_run_fails():
     assert app.return_value == 1
 
 
+async def test_small_graph_keeps_zoom_one():
+    client = FakeClient(
+        first_run=make_run("in_progress", None),
+        run_states=[make_run("in_progress", None)],
+        job_states=[jobs(("completed", "success"), ("in_progress", None))],
+    )
+    app = WatcherApp(client=client, ref="main", poll=60)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        graph = app.query_one(GraphView)
+        assert graph._console_graph.zoom_x == 1.0
+        assert graph._console_graph.zoom_y == 1.0
+
+
+async def test_large_graph_zooms_to_fit():
+    from netext.console_graph import AutoZoom
+
+    many = [
+        Job(id=i, name=f"very-long-job-name-number-{i:02}", status="queued", conclusion=None)
+        for i in range(30)
+    ]
+    yaml_text = "jobs:\n" + "".join(
+        f"  very-long-job-name-number-{i:02}:\n    runs-on: x\n"
+        + (f"    needs: very-long-job-name-number-{i - 1:02}\n" if i else "")
+        for i in range(30)
+    )
+    client = FakeClient(
+        first_run=make_run("in_progress", None),
+        run_states=[make_run("in_progress", None)],
+        job_states=[many],
+        yaml_text=yaml_text,
+    )
+    app = WatcherApp(client=client, ref="main", poll=60)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        graph = app.query_one(GraphView)
+        assert graph.zoom == AutoZoom.FIT
+        # The zoom must actually be applied to the console graph (netext's
+        # watch_zoom has swapped args and would silently keep 1.0).
+        assert graph._console_graph.zoom_x < 1.0 or graph._console_graph.zoom_y < 1.0
+
+
+async def test_no_exit_keeps_app_open_until_quit():
+    client = FakeClient(
+        first_run=make_run("completed", "failure"),
+        run_states=[make_run("completed", "failure")],
+        job_states=[jobs(("completed", "success"), ("completed", "failure"))],
+    )
+    app = WatcherApp(client=client, ref="main", poll=0.05, exit_on_complete=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await asyncio.sleep(0.2)
+        await pilot.pause()
+        # run is complete but the app stays open
+        assert app.return_value is None
+        # quitting after completion exits with the run's status code
+        await pilot.press("q")
+    assert app.return_value == 1
+
+
+async def test_quit_before_completion_exits_130():
+    client = FakeClient(
+        first_run=make_run("in_progress", None),
+        run_states=[make_run("in_progress", None)],
+        job_states=[jobs(("completed", "success"), ("in_progress", None))],
+    )
+    app = WatcherApp(client=client, ref="main", poll=60)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("q")
+    assert app.return_value == 130
+
+
 async def test_app_exits_two_when_no_run_found():
     client = FakeClient(first_run=None, run_states=[], job_states=[])
     app = WatcherApp(client=client, ref="ghost", poll=0.05)

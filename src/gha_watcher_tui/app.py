@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 from netext import ArrowTip, EdgeRoutingMode, EdgeSegmentDrawingMode
+from netext.console_graph import AutoZoom
 from netext.layout_engines import LayoutDirection, SugiyamaLayout
 from netext.textual_widget.widget import GraphView
 from rich.style import Style
@@ -13,8 +14,9 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Static
 
+from .github import describe_api_error
 from .models import Job, WorkflowRun
-from .workflow import build_edges
+from .workflow import build_edges, transitive_reduction
 
 EDGE_DATA: dict[str, Any] = {
     "$edge-routing-mode": EdgeRoutingMode.ORTHOGONAL,
@@ -22,6 +24,16 @@ EDGE_DATA: dict[str, Any] = {
     "$end-arrow-tip": ArrowTip.ARROW,
     "$style": Style(color="grey50"),
 }
+
+
+class FitGraphView(GraphView):
+    def watch_zoom(self, old: Any, new: Any) -> None:
+        # netext 0.5.0 declares watch_zoom(new, old) but Textual passes
+        # (old, new), so the base watcher re-applies the stale zoom and
+        # post-construction zoom changes are silently ignored.
+        if new != old:
+            self._console_graph.zoom = new
+            self._graph_was_updated()
 
 
 def _render_job(node: str, data: dict[str, Any], style: Style) -> Text:
@@ -50,18 +62,20 @@ class WatcherApp(App[int]):
 
     BINDINGS = [Binding("q", "abort", "Quit")]
 
-    def __init__(self, client, ref: str, poll: float = 5.0):
+    def __init__(self, client, ref: str, poll: float = 5.0, exit_on_complete: bool = True):
         super().__init__()
         self.client = client
         self.ref = ref
         self.poll = poll
+        self.exit_on_complete = exit_on_complete
         self.watched_run: WorkflowRun | None = None
         self.jobs_by_name: dict[str, Job] = {}
         self._yaml_text = ""
+        self._timer = None
 
     def compose(self) -> ComposeResult:
         yield Static(f"Looking for the latest run of {self.ref!r}…", id="status")
-        yield GraphView(
+        yield FitGraphView(
             layout_engine=SugiyamaLayout(direction=LayoutDirection.LEFT_RIGHT),
             id="graph",
         )
@@ -74,7 +88,7 @@ class WatcherApp(App[int]):
         try:
             run = await self.client.latest_run(self.ref)
         except httpx.HTTPError as error:
-            self.exit(2, message=f"GitHub API error: {error}")
+            self.exit(2, message=describe_api_error(error, self.client.repo))
             return
         if run is None:
             self.exit(2, message=f"No workflow runs found for ref {self.ref!r}")
@@ -87,7 +101,7 @@ class WatcherApp(App[int]):
         try:
             jobs = await self.client.jobs(run.id)
         except httpx.HTTPError as error:
-            self.exit(2, message=f"GitHub API error: {error}")
+            self.exit(2, message=describe_api_error(error, self.client.repo))
             return
         # GraphView.set_graph is a no-op while the widget is unsized; wait for
         # layout before the first apply.
@@ -97,7 +111,7 @@ class WatcherApp(App[int]):
         self._apply(run, jobs)
         if self._maybe_finish(run):
             return
-        self.set_interval(self.poll, self._tick)
+        self._timer = self.set_interval(self.poll, self._tick)
 
     async def _tick(self) -> None:
         assert self.watched_run is not None
@@ -113,22 +127,26 @@ class WatcherApp(App[int]):
     def _maybe_finish(self, run: WorkflowRun) -> bool:
         if not run.is_complete:
             return False
-        self.exit(
-            run.exit_code,
-            message=f"Run #{run.run_number} ({run.workflow_name}) "
-            f"finished: {run.conclusion}\n{run.html_url}",
-        )
+        if self._timer is not None:
+            self._timer.stop()
+        if self.exit_on_complete:
+            self.exit(
+                run.exit_code,
+                message=f"Run #{run.run_number} ({run.workflow_name}) "
+                f"finished: {run.conclusion}\n{run.html_url}",
+            )
         return True
 
     def _apply(self, run: WorkflowRun, jobs: list[Job]) -> None:
         graph = self.query_one(GraphView)
         new = {job.name: job for job in jobs}
         if set(new) != set(self.jobs_by_name):
-            edges = build_edges(jobs, self._yaml_text)
+            graph.zoom = 1.0
             graph.set_graph(
                 {name: node_data(job) for name, job in new.items()},
-                [(u, v, EDGE_DATA) for u, v in edges],
+                self._display_edges(jobs),
             )
+            self._auto_fit(graph)
         else:
             try:
                 for name, job in new.items():
@@ -138,11 +156,26 @@ class WatcherApp(App[int]):
                 # Console graph lost the node (e.g. rebuilt while unsized).
                 graph.set_graph(
                     {name: node_data(job) for name, job in new.items()},
-                    [(u, v, EDGE_DATA) for u, v in build_edges(jobs, self._yaml_text)],
+                    self._display_edges(jobs),
                 )
         self.jobs_by_name = new
         self.watched_run = run
         self._set_status()
+
+    def _display_edges(self, jobs: list[Job]) -> list[tuple[str, str, dict[str, Any]]]:
+        edges = transitive_reduction(build_edges(jobs, self._yaml_text))
+        return [(u, v, EDGE_DATA) for u, v in edges]
+
+    def _auto_fit(self, graph: GraphView) -> None:
+        """Zoom out to fit graphs that overflow the widget; never zoom in.
+
+        AutoZoom.FIT alone would also scale small graphs *up*, scattering a
+        handful of nodes across the whole screen, so it is only engaged when
+        the graph at zoom 1.0 doesn't fit.
+        """
+        full = graph._console_graph.full_viewport
+        if full.width > graph.size.width or full.height > graph.size.height:
+            graph.zoom = AutoZoom.FIT
 
     def _set_status(self, warning: str | None = None) -> None:
         run = self.watched_run
@@ -159,4 +192,9 @@ class WatcherApp(App[int]):
         self.query_one("#status", Static).update(text)
 
     def action_abort(self) -> None:
-        self.exit(130)
+        # After the run finished (--no-exit), quitting reports its outcome;
+        # before that, quitting is an abort.
+        if self.watched_run is not None and self.watched_run.is_complete:
+            self.exit(self.watched_run.exit_code)
+        else:
+            self.exit(130)

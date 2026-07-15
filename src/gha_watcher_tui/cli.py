@@ -35,6 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=5.0,
         help="poll interval in seconds (default: 5)",
     )
+    parser.add_argument(
+        "--no-exit",
+        action="store_true",
+        help="stay open after the run finishes instead of exiting; "
+        "q then exits with the run's status code",
+    )
     return parser
 
 
@@ -73,7 +79,12 @@ def main() -> None:
     from .app import WatcherApp
     from .github import GitHubClient
 
-    app = WatcherApp(client=GitHubClient(repo=repo, token=token), ref=args.ref, poll=args.poll)
+    app = WatcherApp(
+        client=GitHubClient(repo=repo, token=token),
+        ref=args.ref,
+        poll=args.poll,
+        exit_on_complete=not args.no_exit,
+    )
     exit_code = app.run()
     sys.exit(exit_code if isinstance(exit_code, int) else 2)
 

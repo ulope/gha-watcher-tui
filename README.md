@@ -7,7 +7,7 @@ colored by state — similar to GitHub's web workflow visualization.
 ## Usage
 
 ```sh
-gha-watch <branch-or-tag> [--repo owner/name] [--poll SECONDS]
+gha-watch <branch-or-tag> [--repo owner/name] [--poll SECONDS] [--no-exit]
 ```
 
 - The repository defaults to the `origin` remote of the current directory;
@@ -17,7 +17,9 @@ gha-watch <branch-or-tag> [--repo owner/name] [--poll SECONDS]
 - The graph polls every 5 seconds (`--poll` to change) and updates node colors
   as jobs progress. Press `q` to quit.
 
-When the run finishes the app exits automatically with a status code:
+When the run finishes the app exits automatically with a status code.
+With `--no-exit` it stays open showing the final graph instead; pressing `q`
+then exits with the run's status code.
 
 | Code | Meaning |
 | ---- | ------- |

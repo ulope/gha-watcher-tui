@@ -1,5 +1,10 @@
 from gha_watcher_tui.models import Job
-from gha_watcher_tui.workflow import build_edges, match_yaml_job, parse_needs
+from gha_watcher_tui.workflow import (
+    build_edges,
+    match_yaml_job,
+    parse_needs,
+    transitive_reduction,
+)
 
 SIMPLE_YAML = """
 name: CI
@@ -30,6 +35,33 @@ jobs:
   deploy:
     name: Deploy to prod
     needs: test
+    runs-on: ubuntu-latest
+"""
+
+
+TEMPLATED_YAML = """
+name: ci
+on: push
+jobs:
+  changes:
+    name: images / detect changed components
+    runs-on: ubuntu-latest
+  build-image:
+    name: images / ${{ matrix.component_name }}
+    needs: changes
+    strategy:
+      matrix:
+        component_name: [gateway, updater]
+    runs-on: ubuntu-latest
+  python:
+    name: checks / python (${{ matrix.component }})
+    strategy:
+      matrix:
+        component: [a, b]
+    runs-on: ubuntu-latest
+  release-bundle:
+    name: release / build bundle
+    needs: [changes, build-image]
     runs-on: ubuntu-latest
 """
 
@@ -87,6 +119,68 @@ def test_build_edges_matrix_fan_out_and_in():
     }
 
 
+def test_match_templated_name_expansion():
+    assert match_yaml_job("images / gateway", TEMPLATED_YAML) == "build-image"
+    assert match_yaml_job("images / updater", TEMPLATED_YAML) == "build-image"
+
+
+def test_match_unexpanded_template_of_skipped_matrix_job():
+    assert match_yaml_job("checks / python (${{ matrix.component }})", TEMPLATED_YAML) == "python"
+
+
+def test_match_exact_name_wins_over_template_pattern():
+    assert match_yaml_job("images / detect changed components", TEMPLATED_YAML) == "changes"
+
+
+def test_build_edges_templated_fan_out_and_in():
+    jobs = [
+        job("images / detect changed components"),
+        job("images / gateway"),
+        job("images / updater"),
+        job("release / build bundle"),
+    ]
+    assert set(build_edges(jobs, TEMPLATED_YAML)) == {
+        ("images / detect changed components", "images / gateway"),
+        ("images / detect changed components", "images / updater"),
+        ("images / detect changed components", "release / build bundle"),
+        ("images / gateway", "release / build bundle"),
+        ("images / updater", "release / build bundle"),
+    }
+
+
 def test_build_edges_unmatched_jobs_are_isolated():
     jobs = [job("lint"), job("mystery")]
     assert build_edges(jobs, SIMPLE_YAML) == []
+
+
+def test_transitive_reduction_drops_implied_edge():
+    edges = [("a", "b"), ("b", "c"), ("a", "c")]
+    assert set(transitive_reduction(edges)) == {("a", "b"), ("b", "c")}
+
+
+def test_transitive_reduction_keeps_independent_edges():
+    edges = [("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")]
+    assert set(transitive_reduction(edges)) == set(edges)
+
+
+def test_transitive_reduction_fan_with_shortcut():
+    edges = [
+        ("changes", "img1"),
+        ("changes", "img2"),
+        ("img1", "bundle"),
+        ("img2", "bundle"),
+        ("changes", "bundle"),
+        ("bundle", "publish"),
+    ]
+    assert set(transitive_reduction(edges)) == {
+        ("changes", "img1"),
+        ("changes", "img2"),
+        ("img1", "bundle"),
+        ("img2", "bundle"),
+        ("bundle", "publish"),
+    }
+
+
+def test_transitive_reduction_drops_multi_hop_implied_edge():
+    edges = [("a", "b"), ("b", "c"), ("c", "d"), ("a", "d")]
+    assert set(transitive_reduction(edges)) == {("a", "b"), ("b", "c"), ("c", "d")}

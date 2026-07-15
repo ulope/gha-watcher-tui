@@ -7,6 +7,23 @@ from .models import Job, WorkflowRun, job_from_api, run_from_api
 API_BASE = "https://api.github.com"
 
 
+def describe_api_error(error: httpx.HTTPError, repo: str) -> str:
+    """Turn an httpx error into an actionable message for the user."""
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        if status == 404:
+            return (
+                f"Repository {repo!r} not found (HTTP 404).\n"
+                "Check the owner/name spelling. GitHub also returns 404 for private\n"
+                "repositories the token cannot access — make sure the token has the\n"
+                "'repo' scope (classic PAT), is granted this repository (fine-grained\n"
+                "PAT), and is authorized for the organization if it enforces SSO."
+            )
+        if status == 401:
+            return "GitHub rejected the token (HTTP 401) — it is invalid or expired."
+    return f"GitHub API error: {error}"
+
+
 class GitHubClient:
     def __init__(self, repo: str, token: str, client: httpx.AsyncClient | None = None):
         self.repo = repo

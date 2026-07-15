@@ -25,13 +25,15 @@ def test_parser_defaults():
     assert args.ref == "main"
     assert args.repo is None
     assert args.poll == 5.0
+    assert args.no_exit is False
 
 
 def test_parser_overrides():
-    args = build_parser().parse_args(["v1.2.3", "--repo", "o/r", "--poll", "2"])
+    args = build_parser().parse_args(["v1.2.3", "--repo", "o/r", "--poll", "2", "--no-exit"])
     assert args.ref == "v1.2.3"
     assert args.repo == "o/r"
     assert args.poll == 2.0
+    assert args.no_exit is True
 
 
 def test_resolve_token_prefers_github_token():
