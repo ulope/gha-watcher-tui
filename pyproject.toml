@@ -1,0 +1,33 @@
+[project]
+name = "gha-watcher-tui"
+version = "0.1.0"
+description = "TUI that watches a GitHub Actions run for a branch/tag as a live job graph"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "netext>=0.5.0",
+    "pyyaml>=6.0.3",
+    "textual>=8.2.8",
+]
+
+[project.scripts]
+gha-watch = "gha_watcher_tui.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gha_watcher_tui"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "respx>=0.23.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
