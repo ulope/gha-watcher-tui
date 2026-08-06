@@ -128,8 +128,6 @@ async def test_small_graph_keeps_zoom_one():
 
 
 async def test_large_graph_zooms_to_fit():
-    from netext.console_graph import AutoZoom
-
     many = [
         Job(id=i, name=f"very-long-job-name-number-{i:02}", status="queued", conclusion=None)
         for i in range(30)
@@ -149,10 +147,35 @@ async def test_large_graph_zooms_to_fit():
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         graph = app.query_one(GraphView)
-        assert graph.zoom == AutoZoom.FIT
         # The zoom must actually be applied to the console graph (netext's
-        # watch_zoom has swapped args and would silently keep 1.0).
-        assert graph._console_graph.zoom_x < 1.0 or graph._console_graph.zoom_y < 1.0
+        # watch_zoom has swapped args and would silently keep 1.0), and it
+        # must be uniform: independent x/y scaling distorts routed edges.
+        assert graph._console_graph.zoom_x < 1.0
+        assert graph._console_graph.zoom_x == graph._console_graph.zoom_y
+
+
+async def test_pending_jobs_render_as_placeholders():
+    # GitHub hasn't created "test" yet (its `needs:` haven't resolved), but it
+    # must still appear in the graph, as a pending placeholder.
+    lint_only = [Job(id=1, name="lint", status="in_progress", conclusion=None)]
+    client = FakeClient(
+        first_run=make_run("in_progress", None),
+        run_states=[make_run("in_progress", None)],
+        job_states=[lint_only, jobs(("completed", "success"), ("queued", None))],
+    )
+    app = WatcherApp(client=client, ref="main", poll=60)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert set(app.jobs_by_name) == {"lint", "test"}
+        assert app.jobs_by_name["test"].state == "pending"
+        core = app.query_one(GraphView)._console_graph._core_graph
+        assert set(core.all_nodes()) == {"lint", "test"}
+        assert list(core.all_edges()) == [("lint", "test")]
+        # Once the real job is created it takes the placeholder's spot.
+        await app._tick()
+        await pilot.pause()
+        assert app.jobs_by_name["test"].state == "queued"
+        assert set(core.all_nodes()) == {"lint", "test"}
 
 
 async def test_no_exit_keeps_app_open_until_quit():

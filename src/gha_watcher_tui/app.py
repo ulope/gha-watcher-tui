@@ -5,7 +5,6 @@ from typing import Any
 
 import httpx
 from netext import ArrowTip, EdgeRoutingMode, EdgeSegmentDrawingMode
-from netext.console_graph import AutoZoom
 from netext.layout_engines import LayoutDirection, SugiyamaLayout
 from netext.textual_widget.widget import GraphView
 from rich.style import Style
@@ -15,14 +14,16 @@ from textual.binding import Binding
 from textual.widgets import Footer, Static
 
 from .github import describe_api_error
-from .models import Job, WorkflowRun
-from .workflow import build_edges, transitive_reduction
+from .models import PLACEHOLDER_STATUS, Job, WorkflowRun
+from .workflow import build_edges, pending_jobs, transitive_reduction
 
 EDGE_DATA: dict[str, Any] = {
     "$edge-routing-mode": EdgeRoutingMode.ORTHOGONAL,
     "$edge-segment-drawing-mode": EdgeSegmentDrawingMode.BOX,
     "$end-arrow-tip": ArrowTip.ARROW,
-    "$style": Style(color="grey50"),
+    # Magnets stay on AUTO: explicit ones make netext 0.5.0's router wrap
+    # edges all the way around their endpoint nodes.
+    "$style": Style(color="bright_black"),
 }
 
 
@@ -64,6 +65,9 @@ class WatcherApp(App[int]):
 
     def __init__(self, client, ref: str, poll: float = 5.0, exit_on_complete: bool = True):
         super().__init__()
+        # ANSI passthrough with the terminal's own default background, so the
+        # app matches the terminal's color scheme instead of a Textual theme.
+        self.theme = "ansi-dark"
         self.client = client
         self.ref = ref
         self.poll = poll
@@ -140,6 +144,10 @@ class WatcherApp(App[int]):
     def _apply(self, run: WorkflowRun, jobs: list[Job]) -> None:
         graph = self.query_one(GraphView)
         new = {job.name: job for job in jobs}
+        # YAML jobs GitHub hasn't created yet render as pending placeholders,
+        # so the full DAG is visible (and the layout stable) from the start.
+        for name in pending_jobs(jobs, self._yaml_text).values():
+            new.setdefault(name, Job(id=-1, name=name, status=PLACEHOLDER_STATUS, conclusion=None))
         if set(new) != set(self.jobs_by_name):
             graph.zoom = 1.0
             graph.set_graph(
@@ -169,13 +177,17 @@ class WatcherApp(App[int]):
     def _auto_fit(self, graph: GraphView) -> None:
         """Zoom out to fit graphs that overflow the widget; never zoom in.
 
-        AutoZoom.FIT alone would also scale small graphs *up*, scattering a
-        handful of nodes across the whole screen, so it is only engaged when
-        the graph at zoom 1.0 doesn't fit.
+        Uses a uniform scale factor rather than AutoZoom.FIT, which scales the
+        axes independently and distorts routed edges into stair-steps (and
+        would also scale small graphs *up*, scattering a handful of nodes
+        across the whole screen).
         """
         full = graph._console_graph.full_viewport
         if full.width > graph.size.width or full.height > graph.size.height:
-            graph.zoom = AutoZoom.FIT
+            graph.zoom = min(
+                graph.size.width / full.width,
+                graph.size.height / full.height,
+            )
 
     def _set_status(self, warning: str | None = None) -> None:
         run = self.watched_run
