@@ -62,6 +62,10 @@ def match_yaml_job(api_name: str, yaml_text: str) -> str | None:
     base = api_name.split(" (")[0]
     if base in candidates:
         return candidates[base]
+    # Reusable-workflow jobs expand to "<caller job> / <nested job>".
+    base = api_name.split(" / ")[0]
+    if base in candidates:
+        return candidates[base]
     # Templated names match as patterns; prefer the most literal one.
     patterns.sort(key=lambda item: len(_TEMPLATE_RE.sub("", item[0].pattern)), reverse=True)
     for pattern, job_id in patterns:
@@ -101,20 +105,46 @@ def _name_pattern(name: str) -> re.Pattern[str]:
     return re.compile(".+?".join(re.escape(part) for part in literals) + "$")
 
 
+def _display_name(job_id: str, spec: dict) -> str:
+    name = spec.get("name")
+    return name if isinstance(name, str) else job_id
+
+
+def pending_jobs(api_jobs: list[Job], yaml_text: str) -> dict[str, str]:
+    """YAML jobs GitHub hasn't created yet: job id -> display name.
+
+    A job gated behind `needs:` is absent from the jobs API until its
+    dependencies resolve; these placeholders let the full DAG render from the
+    first frame. Templated names are kept verbatim (as GitHub itself does for
+    skipped matrix jobs).
+    """
+    matched = {match_yaml_job(job.name, yaml_text) for job in api_jobs}
+    return {
+        job_id: _display_name(job_id, spec)
+        for job_id, spec in _yaml_jobs(yaml_text).items()
+        if job_id not in matched
+    }
+
+
 def build_edges(api_jobs: list[Job], yaml_text: str) -> list[tuple[str, str]]:
-    """Dependency edges between API job names, fanning matrix jobs out/in."""
+    """Dependency edges between displayed job names, fanning matrix jobs out/in.
+
+    YAML jobs with no created API job yet participate via their placeholder
+    display name, so edges into and out of pending jobs are visible.
+    """
     needs = parse_needs(yaml_text)
     by_yaml_id: dict[str, list[str]] = {}
-    yaml_id_of: dict[str, str] = {}
     for job in api_jobs:
         yaml_id = match_yaml_job(job.name, yaml_text)
         if yaml_id is not None:
             by_yaml_id.setdefault(yaml_id, []).append(job.name)
-            yaml_id_of[job.name] = yaml_id
+    for yaml_id, display in pending_jobs(api_jobs, yaml_text).items():
+        by_yaml_id[yaml_id] = [display]
 
     edges = []
-    for job_name, yaml_id in yaml_id_of.items():
+    for yaml_id, names in by_yaml_id.items():
         for needed in needs.get(yaml_id, []):
             for upstream in by_yaml_id.get(needed, []):
-                edges.append((upstream, job_name))
+                for job_name in names:
+                    edges.append((upstream, job_name))
     return edges

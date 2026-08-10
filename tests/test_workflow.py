@@ -3,6 +3,7 @@ from gha_watcher_tui.workflow import (
     build_edges,
     match_yaml_job,
     parse_needs,
+    pending_jobs,
     transitive_reduction,
 )
 
@@ -150,7 +151,45 @@ def test_build_edges_templated_fan_out_and_in():
 
 def test_build_edges_unmatched_jobs_are_isolated():
     jobs = [job("lint"), job("mystery")]
-    assert build_edges(jobs, SIMPLE_YAML) == []
+    edges = build_edges(jobs, SIMPLE_YAML)
+    assert not any("mystery" in edge for edge in edges)
+
+
+def test_match_reusable_workflow_job():
+    reusable_yaml = """
+jobs:
+  images:
+    uses: ./.github/workflows/images.yml
+  publish:
+    needs: images
+    runs-on: ubuntu-latest
+"""
+    assert match_yaml_job("images / docker-controller", reusable_yaml) == "images"
+
+
+def test_pending_jobs_lists_uncreated_yaml_jobs():
+    assert pending_jobs([job("lint")], SIMPLE_YAML) == {"test": "test", "deploy": "deploy"}
+
+
+def test_pending_jobs_empty_when_all_jobs_created():
+    assert pending_jobs([job("lint"), job("test"), job("deploy")], SIMPLE_YAML) == {}
+
+
+def test_pending_jobs_uses_display_names_verbatim():
+    pending = pending_jobs([], TEMPLATED_YAML)
+    assert pending["release-bundle"] == "release / build bundle"
+    # Templated names stay unexpanded, as GitHub shows skipped matrix jobs.
+    assert pending["python"] == "checks / python (${{ matrix.component }})"
+
+
+def test_build_edges_includes_pending_jobs():
+    # "lint" and "deploy" haven't been created by GitHub yet, but the DAG
+    # around them is known from the YAML.
+    assert set(build_edges([job("test")], SIMPLE_YAML)) == {
+        ("lint", "test"),
+        ("lint", "deploy"),
+        ("test", "deploy"),
+    }
 
 
 def test_transitive_reduction_drops_implied_edge():

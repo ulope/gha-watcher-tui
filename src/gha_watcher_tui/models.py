@@ -3,15 +3,22 @@
 from dataclasses import dataclass
 from typing import Any
 
-# Normalized job state -> (glyph, rich color)
+# Normalized job state -> (glyph, rich color). Colors are ANSI palette names so
+# they follow the terminal's color scheme.
 STATE_STYLES: dict[str, tuple[str, str]] = {
-    "queued": ("○", "grey50"),
+    "pending": ("◌", "bright_black"),
+    "queued": ("○", "bright_black"),
     "in_progress": ("●", "yellow"),
     "success": ("✓", "green"),
     "failure": ("✗", "red"),
-    "cancelled": ("⊘", "grey50"),
-    "skipped": ("⊘", "grey35"),
+    "cancelled": ("⊘", "bright_black"),
+    "skipped": ("⊘", "bright_black"),
 }
+
+# Sentinel status for jobs known from the workflow YAML that GitHub has not
+# created yet (their `needs:` haven't resolved). Distinct from any real API
+# status value.
+PLACEHOLDER_STATUS = "not_created"
 
 _FAILURE_CONCLUSIONS = {"failure", "timed_out", "startup_failure", "stale", "action_required"}
 
@@ -25,6 +32,8 @@ class Job:
 
     @property
     def state(self) -> str:
+        if self.status == PLACEHOLDER_STATUS:
+            return "pending"
         if self.status == "completed":
             if self.conclusion in _FAILURE_CONCLUSIONS:
                 return "failure"

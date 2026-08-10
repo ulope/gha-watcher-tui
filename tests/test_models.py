@@ -1,4 +1,4 @@
-from gha_watcher_tui.models import Job, WorkflowRun, job_from_api, run_from_api
+from gha_watcher_tui.models import PLACEHOLDER_STATUS, Job, WorkflowRun, job_from_api, run_from_api
 
 
 def make_job(status: str, conclusion: str | None) -> Job:
@@ -15,6 +15,9 @@ def test_job_state_normalizes_status_and_conclusion():
     assert make_job("completed", "timed_out").state == "failure"
     assert make_job("completed", "cancelled").state == "cancelled"
     assert make_job("completed", "skipped").state == "skipped"
+    # Placeholder for a YAML job GitHub hasn't created yet; "pending" from the
+    # real API (line above) must NOT map to this state.
+    assert make_job(PLACEHOLDER_STATUS, None).state == "pending"
 
 
 def test_job_glyph_and_color_per_state():
@@ -23,7 +26,8 @@ def test_job_glyph_and_color_per_state():
     assert make_job("completed", "failure").glyph == "✗"
     assert make_job("completed", "failure").color == "red"
     assert make_job("in_progress", None).color == "yellow"
-    assert make_job("queued", None).color == "grey50"
+    assert make_job("queued", None).color == "bright_black"
+    assert make_job(PLACEHOLDER_STATUS, None).glyph == "◌"
 
 
 def test_job_from_api_payload():

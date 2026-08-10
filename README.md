@@ -31,9 +31,14 @@ then exits with the run's status code.
 ## Notes
 
 - Dependency edges come from parsing the workflow YAML (`needs:`), since the
-  REST jobs API doesn't expose them. Matrix jobs (`test (3.12)`) are matched
-  back to their YAML job heuristically; unmatched jobs render as disconnected
-  nodes.
+  REST jobs API doesn't expose them. Matrix jobs (`test (3.12)`) and
+  reusable-workflow jobs (`images / build`) are matched back to their YAML job
+  heuristically; unmatched jobs render as disconnected nodes.
+- Jobs GitHub hasn't created yet (their `needs:` haven't resolved) are shown as
+  dimmed `◌` placeholders taken from the YAML, so the full graph is visible
+  from the start. A pending matrix job appears as a single placeholder until
+  its legs are created.
+- The UI uses the terminal's own ANSI palette and background.
 - Only the single latest run for the ref is watched; a newer run starting
   mid-watch is ignored.
 
