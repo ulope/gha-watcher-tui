@@ -17,6 +17,12 @@ from .github import describe_api_error
 from .models import PLACEHOLDER_STATUS, Job, WorkflowRun
 from .workflow import build_edges, pending_jobs, transitive_reduction
 
+# The graph always renders at zoom 1.0. netext scales the space *between*
+# nodes when it zooms out but never the nodes themselves, so zooming to fit a
+# small window cannot shrink a graph — it just slides full-size boxes on top of
+# each other, clipping their labels and mangling the routed edges. A graph too
+# big for the window is scrolled instead (GraphView is a ScrollView, so the
+# arrow keys, the mouse wheel and the scrollbars all pan it).
 EDGE_DATA: dict[str, Any] = {
     "$edge-routing-mode": EdgeRoutingMode.ORTHOGONAL,
     "$edge-segment-drawing-mode": EdgeSegmentDrawingMode.BOX,
@@ -25,16 +31,6 @@ EDGE_DATA: dict[str, Any] = {
     # edges all the way around their endpoint nodes.
     "$style": Style(color="bright_black"),
 }
-
-
-class FitGraphView(GraphView):
-    def watch_zoom(self, old: Any, new: Any) -> None:
-        # netext 0.5.0 declares watch_zoom(new, old) but Textual passes
-        # (old, new), so the base watcher re-applies the stale zoom and
-        # post-construction zoom changes are silently ignored.
-        if new != old:
-            self._console_graph.zoom = new
-            self._graph_was_updated()
 
 
 def _render_job(node: str, data: dict[str, Any], style: Style) -> Text:
@@ -79,7 +75,7 @@ class WatcherApp(App[int]):
 
     def compose(self) -> ComposeResult:
         yield Static(f"Looking for the latest run of {self.ref!r}…", id="status")
-        yield FitGraphView(
+        yield GraphView(
             layout_engine=SugiyamaLayout(direction=LayoutDirection.LEFT_RIGHT),
             id="graph",
         )
@@ -149,12 +145,10 @@ class WatcherApp(App[int]):
         for name in pending_jobs(jobs, self._yaml_text).values():
             new.setdefault(name, Job(id=-1, name=name, status=PLACEHOLDER_STATUS, conclusion=None))
         if set(new) != set(self.jobs_by_name):
-            graph.zoom = 1.0
             graph.set_graph(
                 {name: node_data(job) for name, job in new.items()},
                 self._display_edges(jobs),
             )
-            self._auto_fit(graph)
         else:
             try:
                 for name, job in new.items():
@@ -173,21 +167,6 @@ class WatcherApp(App[int]):
     def _display_edges(self, jobs: list[Job]) -> list[tuple[str, str, dict[str, Any]]]:
         edges = transitive_reduction(build_edges(jobs, self._yaml_text))
         return [(u, v, EDGE_DATA) for u, v in edges]
-
-    def _auto_fit(self, graph: GraphView) -> None:
-        """Zoom out to fit graphs that overflow the widget; never zoom in.
-
-        Uses a uniform scale factor rather than AutoZoom.FIT, which scales the
-        axes independently and distorts routed edges into stair-steps (and
-        would also scale small graphs *up*, scattering a handful of nodes
-        across the whole screen).
-        """
-        full = graph._console_graph.full_viewport
-        if full.width > graph.size.width or full.height > graph.size.height:
-            graph.zoom = min(
-                graph.size.width / full.width,
-                graph.size.height / full.height,
-            )
 
     def _set_status(self, warning: str | None = None) -> None:
         run = self.watched_run

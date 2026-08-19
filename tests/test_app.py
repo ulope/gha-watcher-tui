@@ -127,7 +127,7 @@ async def test_small_graph_keeps_zoom_one():
         assert graph._console_graph.zoom_y == 1.0
 
 
-async def test_large_graph_zooms_to_fit():
+async def test_large_graph_scrolls_instead_of_zooming():
     many = [
         Job(id=i, name=f"very-long-job-name-number-{i:02}", status="queued", conclusion=None)
         for i in range(30)
@@ -147,11 +147,13 @@ async def test_large_graph_zooms_to_fit():
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         graph = app.query_one(GraphView)
-        # The zoom must actually be applied to the console graph (netext's
-        # watch_zoom has swapped args and would silently keep 1.0), and it
-        # must be uniform: independent x/y scaling distorts routed edges.
-        assert graph._console_graph.zoom_x < 1.0
-        assert graph._console_graph.zoom_x == graph._console_graph.zoom_y
+        # A graph too big for the window is scrolled, never zoomed: netext
+        # closes the gaps between nodes without shrinking the nodes, so zooming
+        # out only piles the boxes on top of each other.
+        assert graph._console_graph.zoom_x == 1.0
+        assert graph._console_graph.zoom_y == 1.0
+        # The chain lays out left to right, so it overflows horizontally.
+        assert graph.virtual_size.width > graph.size.width
 
 
 async def test_pending_jobs_render_as_placeholders():
