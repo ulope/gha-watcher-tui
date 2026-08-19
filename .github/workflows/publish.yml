@@ -4,20 +4,30 @@ on:
   push:
     tags:
       - "v*"
+  workflow_call:
+    inputs:
+      ref:
+        description: "Tag to build and publish"
+        type: string
+        required: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: astral-sh/setup-uv@v6
 
       - name: Verify tag matches package version
+        env:
+          TAG: ${{ inputs.ref || github.ref_name }}
         run: |
           version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match project version v${version}" >&2
+          if [ "v${version}" != "${TAG}" ]; then
+            echo "Tag ${TAG} does not match project version v${version}" >&2
             exit 1
           fi
 
