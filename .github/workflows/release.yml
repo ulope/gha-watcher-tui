@@ -25,6 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Required to start the publish workflow for the new tag.
+      actions: write
     outputs:
       version: ${{ steps.bump.outputs.version }}
     steps:
@@ -110,12 +112,15 @@ jobs:
           git push origin "HEAD:${GITHUB_REF_NAME}"
           git push origin "refs/tags/v${version}"
 
-  publish:
-    needs: tag
-    permissions:
-      contents: read
-      # Required for PyPI Trusted Publishing (OIDC).
-      id-token: write
-    uses: ./.github/workflows/publish.yml
-    with:
-      ref: v${{ needs.tag.outputs.version }}
+      # A tag pushed with GITHUB_TOKEN does not fire the tag-push trigger, so
+      # publish is started explicitly. workflow_dispatch is one of the two
+      # events GITHUB_TOKEN may trigger. Dispatching on the tag itself gives
+      # the publish run the same context a tag push would, which is what
+      # PyPI's trusted publisher and attestations are configured against.
+      - name: Start the publish workflow for the new tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ steps.bump.outputs.version }}"
+          gh workflow run publish.yml --ref "v${version}"
+          echo "Publishing v${version}: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/publish.yml" >> "$GITHUB_STEP_SUMMARY"
