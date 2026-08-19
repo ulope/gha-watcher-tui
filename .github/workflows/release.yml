@@ -1,0 +1,121 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Which part of the version to bump (ignored if 'version' is set)"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+      version:
+        description: "Explicit version to release, e.g. 1.2.3 (overrides 'bump')"
+        type: string
+        required: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Determine new version
+        id: bump
+        env:
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import os, re, tomllib
+
+          explicit = os.environ.get("INPUT_VERSION", "").strip()
+          current = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+
+          if explicit:
+              new = explicit
+          else:
+              match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", current)
+              if not match:
+                  raise SystemExit(f"Cannot bump non simple version {current!r}, pass an explicit version")
+              major, minor, patch = (int(part) for part in match.groups())
+              part = os.environ["INPUT_BUMP"]
+              if part == "major":
+                  major, minor, patch = major + 1, 0, 0
+              elif part == "minor":
+                  minor, patch = minor + 1, 0
+              else:
+                  patch += 1
+              new = f"{major}.{minor}.{patch}"
+
+          if not re.fullmatch(r"\d+\.\d+\.\d+([abc]|rc)?\d*", new):
+              raise SystemExit(f"Invalid version {new!r}")
+
+          print(f"previous={current}")
+          print(f"version={new}")
+          PY
+
+      - name: Fail if tag already exists
+        run: |
+          tag="v${{ steps.bump.outputs.version }}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null || \
+             git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already exists" >&2
+            exit 1
+          fi
+
+      - name: Update version
+        run: |
+          python3 - <<'PY'
+          import re
+
+          version = "${{ steps.bump.outputs.version }}"
+          text = open("pyproject.toml").read()
+          text, count = re.subn(
+              r'(?m)^version = "[^"]+"$', f'version = "{version}"', text, count=1
+          )
+          if count != 1:
+              raise SystemExit("Could not find the version line in pyproject.toml")
+          open("pyproject.toml", "w").write(text)
+          PY
+          uv lock
+
+      - name: Run tests
+        run: |
+          uv sync
+          uv run pytest
+
+      - name: Commit and tag
+        run: |
+          version="${{ steps.bump.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml uv.lock
+          git commit -m "Bump v${version}"
+          git tag -a "v${version}" -m "v${version}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "refs/tags/v${version}"
+
+  publish:
+    needs: tag
+    permissions:
+      contents: read
+      # Required for PyPI Trusted Publishing (OIDC).
+      id-token: write
+    uses: ./.github/workflows/publish.yml
+    with:
+      ref: v${{ needs.tag.outputs.version }}
