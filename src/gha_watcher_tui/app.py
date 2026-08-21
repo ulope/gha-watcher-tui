@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 from netext import ArrowTip, EdgeRoutingMode, EdgeSegmentDrawingMode
+from netext.geometry.point import FloatPoint
 from netext.layout_engines import LayoutDirection, SugiyamaLayout
 from netext.textual_widget.widget import GraphView
 from rich.style import Style
@@ -31,6 +32,51 @@ EDGE_DATA: dict[str, Any] = {
     # edges all the way around their endpoint nodes.
     "$style": Style(color="bright_black"),
 }
+
+
+# Rows between the centers of two job boxes stacked in the same layer. The
+# boxes are 3 rows tall (border, label, border), so 4 leaves one blank row
+# between them — enough for the router to slip a horizontal edge past.
+ROW_PITCH = 4
+
+
+class CompactRowLayout:
+    """Sugiyama, with the vertical padding netext bakes in squeezed back out.
+
+    netext lays a graph out from node sizes it inflates by 5 rows (and 10
+    columns) to make room for edges, and the layout engine has no knob for
+    that, so one-line job boxes end up 9 rows apart — six blank rows between
+    them. Rescaling the finished layout is the only lever: shrink every y
+    coordinate until the tightest pair of boxes in a layer sits `row_pitch`
+    rows apart. A uniform scale keeps whatever Sugiyama aligned aligned, and
+    deriving it from the tightest pair (rather than assuming netext's
+    padding) means the boxes can never end up overlapping. Columns are left
+    alone; edges need the horizontal room to turn.
+    """
+
+    def __init__(self, direction: LayoutDirection, row_pitch: int = ROW_PITCH):
+        self._inner = SugiyamaLayout(direction=direction)
+        self.layout_direction = direction
+        self.row_pitch = row_pitch
+
+    def layout(self, graph: Any) -> list[tuple[Any, Any]]:
+        positions = list(self._inner.layout(graph))
+        scale = self._row_scale(positions)
+        if scale >= 1.0:
+            return positions
+        return [(node, FloatPoint(point.x, round(point.y * scale))) for node, point in positions]
+
+    def _row_scale(self, positions: list[tuple[Any, Any]]) -> float:
+        layers: dict[float, list[float]] = {}
+        for _, point in positions:
+            layers.setdefault(point.x, []).append(point.y)
+        gaps = [
+            b - a
+            for rows in layers.values()
+            for a, b in zip(sorted(rows), sorted(rows)[1:])
+            if b > a
+        ]
+        return self.row_pitch / min(gaps) if gaps else 1.0
 
 
 def _render_job(node: str, data: dict[str, Any], style: Style) -> Text:
@@ -76,7 +122,7 @@ class WatcherApp(App[int]):
     def compose(self) -> ComposeResult:
         yield Static(f"Looking for the latest run of {self.ref!r}…", id="status")
         yield GraphView(
-            layout_engine=SugiyamaLayout(direction=LayoutDirection.LEFT_RIGHT),
+            layout_engine=CompactRowLayout(direction=LayoutDirection.LEFT_RIGHT),
             id="graph",
         )
         yield Footer()

@@ -2,7 +2,7 @@ import asyncio
 
 from netext.textual_widget.widget import GraphView
 
-from gha_watcher_tui.app import WatcherApp
+from gha_watcher_tui.app import ROW_PITCH, WatcherApp
 from gha_watcher_tui.models import Job, WorkflowRun
 
 YAML = """
@@ -125,6 +125,42 @@ async def test_small_graph_keeps_zoom_one():
         graph = app.query_one(GraphView)
         assert graph._console_graph.zoom_x == 1.0
         assert graph._console_graph.zoom_y == 1.0
+
+
+async def test_parallel_jobs_stack_without_wasted_rows():
+    # netext lays out from node sizes inflated by 5 rows, which would leave six
+    # blank rows between the parallel jobs; the layout is rescaled so stacked
+    # boxes sit ROW_PITCH rows apart.
+    yaml_text = """
+jobs:
+  lint:
+    runs-on: x
+  test-a:
+    needs: lint
+    runs-on: x
+  test-b:
+    needs: lint
+    runs-on: x
+"""
+    parallel = [
+        Job(id=1, name="lint", status="completed", conclusion="success"),
+        Job(id=2, name="test-a", status="in_progress", conclusion=None),
+        Job(id=3, name="test-b", status="in_progress", conclusion=None),
+    ]
+    client = FakeClient(
+        first_run=make_run("in_progress", None),
+        run_states=[make_run("in_progress", None)],
+        job_states=[parallel],
+        yaml_text=yaml_text,
+    )
+    app = WatcherApp(client=client, ref="main", poll=60)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        buffers = app.query_one(GraphView)._console_graph.node_buffers
+        rows = abs(buffers["test-a"].center.y - buffers["test-b"].center.y)
+        assert rows == ROW_PITCH
+        # Which still clears the 3-row boxes, so nothing overlaps.
+        assert rows > buffers["test-a"].height - 1
 
 
 async def test_large_graph_scrolls_instead_of_zooming():
