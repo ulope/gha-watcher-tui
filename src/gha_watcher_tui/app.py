@@ -1,12 +1,6 @@
 """Textual app: live job graph for a single workflow run."""
 
-import asyncio
-from typing import Any
-
 import httpx
-from netext import ArrowTip, EdgeRoutingMode, EdgeSegmentDrawingMode
-from netext.layout_engines import LayoutDirection, SugiyamaLayout
-from netext.textual_widget.widget import GraphView
 from rich.style import Style
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -14,37 +8,16 @@ from textual.binding import Binding
 from textual.widgets import Footer, Static
 
 from .github import describe_api_error
+from .graph_view import GraphNode, JobGraph
 from .models import PLACEHOLDER_STATUS, Job, WorkflowRun
 from .workflow import build_edges, pending_jobs, transitive_reduction
 
-# The graph always renders at zoom 1.0. netext scales the space *between*
-# nodes when it zooms out but never the nodes themselves, so zooming to fit a
-# small window cannot shrink a graph — it just slides full-size boxes on top of
-# each other, clipping their labels and mangling the routed edges. A graph too
-# big for the window is scrolled instead (GraphView is a ScrollView, so the
-# arrow keys, the mouse wheel and the scrollbars all pan it).
-EDGE_DATA: dict[str, Any] = {
-    "$edge-routing-mode": EdgeRoutingMode.ORTHOGONAL,
-    "$edge-segment-drawing-mode": EdgeSegmentDrawingMode.BOX,
-    "$end-arrow-tip": ArrowTip.ARROW,
-    # Magnets stay on AUTO: explicit ones make netext 0.5.0's router wrap
-    # edges all the way around their endpoint nodes.
-    "$style": Style(color="bright_black"),
-}
 
-
-def _render_job(node: str, data: dict[str, Any], style: Style) -> Text:
-    return Text(f"{data.get('glyph', '?')} {node}", style=style)
-
-
-def node_data(job: Job) -> dict[str, Any]:
-    style = Style(color=job.color, bold=job.state == "in_progress")
-    return {
-        "glyph": job.glyph,
-        "$style": style,
-        "$content-style": style,
-        "$content-renderer": _render_job,
-    }
+def node(job: Job) -> GraphNode:
+    return GraphNode(
+        label=f"{job.glyph} {job.name}",
+        style=Style(color=job.color, bold=job.state == "in_progress"),
+    )
 
 
 class WatcherApp(App[int]):
@@ -75,10 +48,7 @@ class WatcherApp(App[int]):
 
     def compose(self) -> ComposeResult:
         yield Static(f"Looking for the latest run of {self.ref!r}…", id="status")
-        yield GraphView(
-            layout_engine=SugiyamaLayout(direction=LayoutDirection.LEFT_RIGHT),
-            id="graph",
-        )
+        yield JobGraph(id="graph")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -103,11 +73,6 @@ class WatcherApp(App[int]):
         except httpx.HTTPError as error:
             self.exit(2, message=describe_api_error(error, self.client.repo))
             return
-        # GraphView.set_graph is a no-op while the widget is unsized; wait for
-        # layout before the first apply.
-        graph = self.query_one(GraphView)
-        while graph.size.width == 0:
-            await asyncio.sleep(0.01)
         self._apply(run, jobs)
         if self._maybe_finish(run):
             return
@@ -138,35 +103,22 @@ class WatcherApp(App[int]):
         return True
 
     def _apply(self, run: WorkflowRun, jobs: list[Job]) -> None:
-        graph = self.query_one(GraphView)
         new = {job.name: job for job in jobs}
         # YAML jobs GitHub hasn't created yet render as pending placeholders,
         # so the full DAG is visible (and the layout stable) from the start.
         for name in pending_jobs(jobs, self._yaml_text).values():
             new.setdefault(name, Job(id=-1, name=name, status=PLACEHOLDER_STATUS, conclusion=None))
-        if set(new) != set(self.jobs_by_name):
-            graph.set_graph(
-                {name: node_data(job) for name, job in new.items()},
+        if _states(new) != _states(self.jobs_by_name):
+            self.query_one(JobGraph).set_graph(
+                {name: node(job) for name, job in new.items()},
                 self._display_edges(jobs),
             )
-        else:
-            try:
-                for name, job in new.items():
-                    if self.jobs_by_name[name].state != job.state:
-                        graph.update_node(name, data=node_data(job))
-            except KeyError:
-                # Console graph lost the node (e.g. rebuilt while unsized).
-                graph.set_graph(
-                    {name: node_data(job) for name, job in new.items()},
-                    self._display_edges(jobs),
-                )
         self.jobs_by_name = new
         self.watched_run = run
         self._set_status()
 
-    def _display_edges(self, jobs: list[Job]) -> list[tuple[str, str, dict[str, Any]]]:
-        edges = transitive_reduction(build_edges(jobs, self._yaml_text))
-        return [(u, v, EDGE_DATA) for u, v in edges]
+    def _display_edges(self, jobs: list[Job]) -> list[tuple[str, str]]:
+        return transitive_reduction(build_edges(jobs, self._yaml_text))
 
     def _set_status(self, warning: str | None = None) -> None:
         run = self.watched_run
@@ -189,3 +141,8 @@ class WatcherApp(App[int]):
             self.exit(self.watched_run.exit_code)
         else:
             self.exit(130)
+
+
+def _states(jobs: dict[str, Job]) -> dict[str, str]:
+    """What the graph is drawn from: a redraw is only worth it when this moves."""
+    return {name: job.state for name, job in jobs.items()}

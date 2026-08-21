@@ -38,6 +38,11 @@ then exits with the run's status code.
   dimmed `◌` placeholders taken from the YAML, so the full graph is visible
   from the start. A pending matrix job appears as a single placeholder until
   its legs are created.
+- The graph is laid out in layers by [grandalf](https://github.com/bdcht/grandalf)
+  and drawn here: edges leaving a job share one trunk and split off at their
+  target's row, and a fan-in converges on one line, so the picture stays
+  readable as the job count grows. It renders at full size and scrolls (arrow
+  keys, mouse wheel, scrollbars) rather than shrinking to fit.
 - The UI uses the terminal's own ANSI palette and background.
 - Only the single latest run for the ref is watched; a newer run starting
   mid-watch is ignored.
