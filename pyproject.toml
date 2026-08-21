@@ -1,6 +1,6 @@
 [project]
 name = "gha-watcher-tui"
-version = "0.2.4"
+version = "1.0.0"
 description = "TUI that watches a GitHub Actions run for a branch/tag as a live job graph"
 readme = "README.md"
 requires-python = ">=3.13"
