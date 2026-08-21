@@ -1,9 +1,14 @@
 import asyncio
 
-from netext.textual_widget.widget import GraphView
-
-from gha_watcher_tui.app import ROW_PITCH, WatcherApp
+from gha_watcher_tui.app import WatcherApp
+from gha_watcher_tui.graph_view import JobGraph
 from gha_watcher_tui.models import Job, WorkflowRun
+
+
+def screen(app) -> str:
+    """What the graph widget is actually showing right now."""
+    graph = app.query_one(JobGraph)
+    return "\n".join(graph.render_line(y).text for y in range(graph.size.height))
 
 YAML = """
 jobs:
@@ -73,9 +78,10 @@ async def test_app_shows_graph_while_run_in_progress():
     app = WatcherApp(client=client, ref="main", poll=60)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.query_one(GraphView) is not None
         assert set(app.jobs_by_name) == {"lint", "test"}
         assert app.jobs_by_name["test"].state == "in_progress"
+        assert "✓ lint" in screen(app)
+        assert "● test" in screen(app)
 
 
 async def test_app_exits_zero_when_run_succeeds():
@@ -113,7 +119,7 @@ async def test_app_exits_one_when_run_fails():
     assert app.return_value == 1
 
 
-async def test_small_graph_keeps_zoom_one():
+async def test_graph_is_drawn_at_its_natural_size():
     client = FakeClient(
         first_run=make_run("in_progress", None),
         run_states=[make_run("in_progress", None)],
@@ -122,45 +128,11 @@ async def test_small_graph_keeps_zoom_one():
     app = WatcherApp(client=client, ref="main", poll=60)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        graph = app.query_one(GraphView)
-        assert graph._console_graph.zoom_x == 1.0
-        assert graph._console_graph.zoom_y == 1.0
-
-
-async def test_parallel_jobs_stack_without_wasted_rows():
-    # netext lays out from node sizes inflated by 5 rows, which would leave six
-    # blank rows between the parallel jobs; the layout is rescaled so stacked
-    # boxes sit ROW_PITCH rows apart.
-    yaml_text = """
-jobs:
-  lint:
-    runs-on: x
-  test-a:
-    needs: lint
-    runs-on: x
-  test-b:
-    needs: lint
-    runs-on: x
-"""
-    parallel = [
-        Job(id=1, name="lint", status="completed", conclusion="success"),
-        Job(id=2, name="test-a", status="in_progress", conclusion=None),
-        Job(id=3, name="test-b", status="in_progress", conclusion=None),
-    ]
-    client = FakeClient(
-        first_run=make_run("in_progress", None),
-        run_states=[make_run("in_progress", None)],
-        job_states=[parallel],
-        yaml_text=yaml_text,
-    )
-    app = WatcherApp(client=client, ref="main", poll=60)
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        buffers = app.query_one(GraphView)._console_graph.node_buffers
-        rows = abs(buffers["test-a"].center.y - buffers["test-b"].center.y)
-        assert rows == ROW_PITCH
-        # Which still clears the 3-row boxes, so nothing overlaps.
-        assert rows > buffers["test-a"].height - 1
+        graph = app.query_one(JobGraph)
+        # A graph that fits needs no scrolling, and the boxes are never scaled:
+        # a job name you can't read is worse than one you have to scroll to.
+        assert graph.virtual_size.width <= graph.size.width
+        assert "─▶" in screen(app)
 
 
 async def test_large_graph_scrolls_instead_of_zooming():
@@ -182,14 +154,15 @@ async def test_large_graph_scrolls_instead_of_zooming():
     app = WatcherApp(client=client, ref="main", poll=60)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        graph = app.query_one(GraphView)
-        # A graph too big for the window is scrolled, never zoomed: netext
-        # closes the gaps between nodes without shrinking the nodes, so zooming
-        # out only piles the boxes on top of each other.
-        assert graph._console_graph.zoom_x == 1.0
-        assert graph._console_graph.zoom_y == 1.0
-        # The chain lays out left to right, so it overflows horizontally.
+        graph = app.query_one(JobGraph)
+        # The chain lays out left to right, so it overflows the window and is
+        # scrolled rather than shrunk.
         assert graph.virtual_size.width > graph.size.width
+        assert graph.render_line(0).cell_length == graph.size.width
+        # ...and panned with the arrow keys.
+        await pilot.press("right")
+        await pilot.pause()
+        assert graph.scroll_offset.x > 0
 
 
 async def test_pending_jobs_render_as_placeholders():
@@ -206,14 +179,14 @@ async def test_pending_jobs_render_as_placeholders():
         await pilot.pause()
         assert set(app.jobs_by_name) == {"lint", "test"}
         assert app.jobs_by_name["test"].state == "pending"
-        core = app.query_one(GraphView)._console_graph._core_graph
-        assert set(core.all_nodes()) == {"lint", "test"}
-        assert list(core.all_edges()) == [("lint", "test")]
+        assert "◌ test" in screen(app)
+        assert app._display_edges(lint_only) == [("lint", "test")]
         # Once the real job is created it takes the placeholder's spot.
         await app._tick()
         await pilot.pause()
         assert app.jobs_by_name["test"].state == "queued"
-        assert set(core.all_nodes()) == {"lint", "test"}
+        assert "○ test" in screen(app)
+        assert "◌ test" not in screen(app)
 
 
 async def test_no_exit_keeps_app_open_until_quit():
